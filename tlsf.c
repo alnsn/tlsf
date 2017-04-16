@@ -587,7 +587,7 @@ search_suitable_block(control_t* control, int* fli, int* sli)
 		if (!fl_map)
 		{
 			/* No free blocks available, memory has been exhausted. */
-			return 0;
+			return NULL;
 		}
 
 		fl = tlsf_ffs(fl_map);
@@ -1037,7 +1037,7 @@ tlsf_add_pool(tlsf_t tlsf, void* mem, size_t bytes)
 	{
 		printf("tlsf_add_pool: Memory must be aligned by %u bytes.\n",
 			(unsigned int)ALIGN_SIZE);
-		return 0;
+		return NULL;
 	}
 
 	if (pool_bytes < block_size_min || pool_bytes > block_size_max)
@@ -1051,7 +1051,7 @@ tlsf_add_pool(tlsf_t tlsf, void* mem, size_t bytes)
 			(unsigned int)(pool_overhead + block_size_min),
 			(unsigned int)(pool_overhead + block_size_max));
 #endif
-		return 0;
+		return NULL;
 	}
 
 	/*
@@ -1129,7 +1129,7 @@ tlsf_create(void* mem)
 #if _DEBUG
 	if (test_ffs_fls())
 	{
-		return 0;
+		return NULL;
 	}
 #endif
 
@@ -1137,7 +1137,7 @@ tlsf_create(void* mem)
 	{
 		printf("tlsf_create: Memory must be aligned to %u bytes.\n",
 			(unsigned int)ALIGN_SIZE);
-		return 0;
+		return NULL;
 	}
 
 	control_construct(tlsf_cast(control_t*, mem));
