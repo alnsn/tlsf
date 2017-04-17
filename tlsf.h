@@ -50,9 +50,10 @@ typedef struct tlsf *tlsf_t;
 typedef struct tlsf_pool *tlsf_pool_t;
 
 /* Create/destroy a memory pool. */
-tlsf_t tlsf_create(void *);
+tlsf_t tlsf_create(void *, size_t);
 tlsf_t tlsf_create_with_pool(void *, size_t);
 void tlsf_destroy(tlsf_t);
+int tlsf_last_error(tlsf_t);
 tlsf_pool_t tlsf_get_pool(tlsf_t);
 
 /* Add/remove memory pools. */

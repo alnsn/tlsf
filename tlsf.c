@@ -1,7 +1,7 @@
 #include <assert.h>
+#include <errno.h>
 #include <limits.h>
 #include <stddef.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -269,6 +269,10 @@ enum tlsf_private {
 	SMALL_BLOCK_SIZE = (1 << FL_INDEX_SHIFT),
 };
 
+enum misc_flags {
+	WITH_POOL = 1, /* Pool object goes right after the control structure. */
+};
+
 /*
 ** Cast and min/max macros.
 */
@@ -361,6 +365,9 @@ static const size_t block_size_max = tlsf_cast(size_t, 1) << FL_INDEX_MAX;
 
 /* The TLSF control structure. */
 struct tlsf {
+	int last_error;
+	int misc_flags;
+
 	/* Empty lists point at this block to indicate they are free. */
 	block_header_t block_null;
 
@@ -878,7 +885,9 @@ block_prepare_used(tlsf_t tlsf, block_header_t *block, size_t size)
 {
 	void *p = 0;
 
-	if (block != NULL) {
+	if (block == NULL) {
+		tlsf->last_error = ENOMEM;
+	} else {
 		tlsf_assert(size && "size must be non-zero");
 		block_trim_free(tlsf, block, size);
 		block_mark_as_used(block);
@@ -895,6 +904,8 @@ control_construct(tlsf_t tlsf)
 {
 	int i, j;
 
+	tlsf->last_error = 0;
+	tlsf->misc_flags = 0;
 	tlsf->block_null.next_free = &tlsf->block_null;
 	tlsf->block_null.prev_free = &tlsf->block_null;
 
@@ -995,27 +1006,15 @@ tlsf_check(tlsf_t tlsf)
 
 #undef tlsf_insist
 
-static void
-default_walker(void *ptr, size_t size, int used, void *user)
-{
-
-	(void)user;
-	printf("\t%p %s size: %x (%p)\n", ptr, used ? "used" : "free", (unsigned int)size, block_from_ptr(ptr));
-}
-
 void
 tlsf_walk_pool(tlsf_pool_t pool, tlsf_walker walker, void *user)
 {
-	tlsf_walker pool_walker = walker ? walker : default_walker;
 	block_header_t *block =
 		offset_to_block(pool, -(int)block_header_overhead);
 
-	while (block && !block_is_last(block)) {
-		pool_walker(
-			block_to_ptr(block),
-			block_size(block),
-			!block_is_free(block),
-			user);
+	while (block != NULL && !block_is_last(block)) {
+		walker(block_to_ptr(block), block_size(block),
+		    !block_is_free(block), user);
 		block = block_next(block);
 	}
 }
@@ -1103,23 +1102,17 @@ tlsf_add_pool(tlsf_t tlsf, void *mem, size_t bytes)
 	const size_t pool_bytes = align_down(bytes - pool_overhead, ALIGN_SIZE);
 
 	if (((ptrdiff_t)mem % ALIGN_SIZE) != 0) {
-		printf("tlsf_add_pool: Memory must be aligned by %u bytes.\n",
-			(unsigned int)ALIGN_SIZE);
+		tlsf->last_error = EINVAL;
 		return NULL;
 	}
 
 	if (pool_bytes < block_size_min || pool_bytes > block_size_max) {
-#if defined (TLSF_64BIT)
-		printf("tlsf_add_pool: Memory size must be between 0x%x and 0x%x00 bytes.\n", 
-			(unsigned int)(pool_overhead + block_size_min),
-			(unsigned int)((pool_overhead + block_size_max) / 256));
-#else
-		printf("tlsf_add_pool: Memory size must be between %u and %u bytes.\n", 
-			(unsigned int)(pool_overhead + block_size_min),
-			(unsigned int)(pool_overhead + block_size_max));
-#endif
+		tlsf->last_error = ERANGE;
 		return NULL;
 	}
+
+	if ((char *)tlsf + tlsf_size() == mem)
+		tlsf->misc_flags |= WITH_POOL;
 
 	/*
 	** Create the main free block. Offset the start of the block slightly
@@ -1147,6 +1140,9 @@ tlsf_remove_pool(tlsf_t tlsf, tlsf_pool_t pool)
 	block_header_t *block =
 	    offset_to_block(pool, -(int)block_header_overhead);
 	int fl = 0, sl = 0;
+
+	if ((char *)tlsf + tlsf_size() == (char *)pool)
+		tlsf->misc_flags &= ~WITH_POOL;
 
 	tlsf_assert(block_is_free(block) &&
 	    "block should be free");
@@ -1185,15 +1181,13 @@ test_ffs_fls()
 	rv += (tlsf_fls_sizet(0xffffffffffffffff) == 63) ? 0 : 0x400;
 #endif
 
-	if (rv)
-		printf("test_ffs_fls: %x ffs/fls tests failed.\n", rv);
-
+	tlsf_assert(rv == 0 && "test_ffs_fls() failed");
 	return rv;
 }
 #endif
 
 tlsf_t
-tlsf_create(void *mem)
+tlsf_create(void *mem, size_t bytes)
 {
 
 #if TLSF_DEBUG
@@ -1201,11 +1195,11 @@ tlsf_create(void *mem)
 		return NULL;
 #endif
 
-	if (((tlsfptr_t)mem % ALIGN_SIZE) != 0) {
-		printf("tlsf_create: Memory must be aligned to %u bytes.\n",
-			(unsigned int)ALIGN_SIZE);
+	if (((tlsfptr_t)mem % ALIGN_SIZE) != 0)
 		return NULL;
-	}
+
+	if (bytes < tlsf_size())
+		return NULL;
 
 	control_construct(tlsf_cast(tlsf_t, mem));
 
@@ -1215,10 +1209,15 @@ tlsf_create(void *mem)
 tlsf_t
 tlsf_create_with_pool(void *mem, size_t bytes)
 {
-	tlsf_t tlsf = tlsf_create(mem);
+	tlsf_t tlsf = tlsf_create(mem, bytes);
 
-	tlsf_add_pool(tlsf, (char *)mem + tlsf_size(), bytes - tlsf_size());
-	return tlsf;
+	if (tlsf == NULL)
+		return NULL;
+
+	if (tlsf_add_pool(tlsf, (char *)mem + tlsf_size(), bytes - tlsf_size()))
+		return tlsf;
+	else
+		return NULL;
 }
 
 void
@@ -1229,11 +1228,23 @@ tlsf_destroy(tlsf_t tlsf)
 	(void)tlsf;
 }
 
+int
+tlsf_last_error(tlsf_t tlsf)
+{
+
+	return tlsf->last_error;
+}
+
 tlsf_pool_t
 tlsf_get_pool(tlsf_t tlsf)
 {
 
-	return tlsf_cast(tlsf_pool_t, (char *)tlsf + tlsf_size());
+	if (tlsf->misc_flags & WITH_POOL) {
+		return tlsf_cast(tlsf_pool_t, (char *)tlsf + tlsf_size());
+	} else {
+		tlsf->last_error = EINVAL;
+		return NULL;
+	}
 }
 
 void *
