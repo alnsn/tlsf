@@ -865,7 +865,7 @@ static block_header_t *
 block_locate_free(tlsf_t tlsf, size_t size)
 {
 	int fl = 0, sl = 0;
-	block_header_t *block = 0;
+	block_header_t *block = NULL;
 
 	if (size != 0) {
 		mapping_search(size, &fl, &sl);
@@ -883,7 +883,7 @@ block_locate_free(tlsf_t tlsf, size_t size)
 static void *
 block_prepare_used(tlsf_t tlsf, block_header_t *block, size_t size)
 {
-	void *p = 0;
+	void *p = NULL;
 
 	if (block == NULL) {
 		tlsf->last_error = ENOMEM;
@@ -1346,7 +1346,7 @@ tlsf_free(tlsf_t tlsf, void *ptr)
 void *
 tlsf_realloc(tlsf_t tlsf, void *ptr, size_t size)
 {
-	void *p = 0;
+	void *p = NULL;
 
 	/* Zero-size requests are treated as free. */
 	if (ptr != NULL && size == 0) {
